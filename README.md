@@ -20,6 +20,8 @@ Vystup: `tsa_client_openssl.exe` na Windows, `tsa_client_openssl` na Linux/macOS
 
 Na Linuxe a macOS Makefile pouziva `pkg-config` pre OpenSSL, ak je dostupny; inak skusa klasicke `-lssl -lcrypto`.
 
+GitHub Actions CI bezi na `ubuntu-latest` a `macos-latest` a overuje build aj zakladny CLI smoke test.
+
 ## Pouzitie
 
 ### Vytvorenie casovej peciatky
