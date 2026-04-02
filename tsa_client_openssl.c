@@ -115,10 +115,10 @@ static int is_certificate_path(const char *path) {
         return 0;
     }
 
-    if (_stricmp(ext, ".crt") == 0 ||
-        _stricmp(ext, ".cer") == 0 ||
-        _stricmp(ext, ".pem") == 0 ||
-        _stricmp(ext, ".der") == 0) {
+    if (strcasecmp(ext, ".crt") == 0 ||
+        strcasecmp(ext, ".cer") == 0 ||
+        strcasecmp(ext, ".pem") == 0 ||
+        strcasecmp(ext, ".der") == 0) {
         return 1;
     }
 
@@ -140,7 +140,7 @@ static const tsa_server_config_t *find_tsa_server(const char *name) {
     }
 
     for (i = 0; i < TSA_SERVER_COUNT; i++) {
-        if (_stricmp(name, TSA_SERVERS[i].name) == 0) {
+        if (strcasecmp(name, TSA_SERVERS[i].name) == 0) {
             return &TSA_SERVERS[i];
         }
     }
