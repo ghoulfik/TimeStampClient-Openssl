@@ -1,0 +1,46 @@
+================================================================================
+ TSA klient (RFC 3161) - OpenSSL varianta
+ Autor: Anton Kozar
+================================================================================
+
+v1.00 | 02.13.2026 | 
+ - Kostra aplikacie v tsa_client_openssl.c
+ - buffer_t struktura, SHA-256 hashovanie (EVP), RFC 3161 TimeStampReq
+ - HTTP POST cez OpenSSL BIO, parsovanie odpovede, ukladanie .tsr tokenu
+ - Predvoleny server: freetsa.org:80/tsr
+
+v1.10 | 02.15.2026 | 
+ - verify_timestamp(): overenie message imprint a PKCS7 podpisu (.tsr)
+ - Podpora volitelneho doveryhodneho certifikatu (PEM/DER)
+ - save_metadata(): zapis GenTime, serial, policy OID, hash do .metadata.txt
+ - Automaticke doplnenie nazvu .tsr ak nie je zadany
+
+v1.20 | 02.16.2026 | 
+ - Dekodovanie Transfer-Encoding: chunked (RFC 7230)
+ - Detekcia Content-Type: application/timestamp-reply
+ - Zlepsene chybove vypisy pri chybe dekodiania TS_RESP
+ - Predvoleny server zmeneny na timestamp.digicert.com:80/
+
+v1.30 | 02.19.2026 | 
+ - Pridane --host, --port, --path prepinace
+ - Pridana tabulka preddefinovanych serverov (--server NAME)
+ - Funkcia usage() zobrazuje dostupne servery a endpoint
+ - Pridane hex_print() a print_openssl_errors()
+
+v1.40 | 02.21.2026 | 
+ - Standardizovane komentare ku vsetkym funkciam
+ - Komentare ku konstantam a poliam struktur
+ - Odstranene nepotrebne subory, Makefile zjednoduseny
+
+v1.45 | 03.28.2026 | 
+ - Otestovane vsetky preddefinovane servery
+ - Otestovany vlastny endpoint (--host --port --path) aj verify s certifikatom
+ - Znamhe problemy: Sectigo a GlobalSign verify +cert stale zlyhava kvoli rozdielnosti mien vydavatelov
+   v tokenoch vs. poskytnutych certifikatoch.
+ - Vsetky ostatne funkcionalite pracuju bez problemu: timestamp pre vsetky servery, verify bez cert,
+   implicitne verify, custom endpoint
+
+v1.50 | 03.30.2026 | 
+ - Vylepsene verify_token_signature() pre vyhladavanie zhody certifikatov napriec celou vlozenou CA retazou (chain) vo vnutri PKCS7
+ - Pridana fallback kontrola overenia cez verejny kluc
+ - Problem s certifikatmi Sectigo a GlobalSign uspesne vyrieseny extrakciou spravnych podpisovatelskych certifikatov priamo z tokenov

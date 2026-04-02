@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TSA Client (RFC 3161) - Dokumentácia</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a73e8;
+            margin-bottom: 10px;
+            border-bottom: 3px solid #1a73e8;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #2d5016;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-left: 4px solid #2d5016;
+            padding-left: 12px;
+        }
+        h3 {
+            color: #3d5a80;
+            margin-top: 20px;
+            margin-bottom: 12px;
+        }
+        .intro {
+            background: #f0f7ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border-left: 4px solid #1a73e8;
+        }
+        .default-server {
+            background: #fffbea;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #fbbc04;
+        }
+        code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            color: #d32f2f;
+        }
+        pre {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+        }
+        pre code {
+            background: none;
+            color: #f8f8f2;
+            padding: 0;
+        }
+        ul, ol {
+            margin-left: 25px;
+            margin-bottom: 15px;
+        }
+        li {
+            margin-bottom: 8px;
+        }
+        .server-list {
+            background: #f9f9f9;
+            padding: 20px;
+            border-radius: 5px;
+            border: 1px solid #e0e0e0;
+        }
+        .server-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .server-item:last-child {
+            border-bottom: none;
+        }
+        .status-pass {
+            color: #0d652d;
+            font-weight: bold;
+        }
+        .status-fail {
+            color: #d32f2f;
+            font-weight: bold;
+        }
+        .test-results {
+            background: #f0f8e8;
+            padding: 20px;
+            border-radius: 5px;
+            margin: 15px 0;
+            border-left: 4px solid #0d652d;
+        }
+        .test-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        .test-stat {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            border: 2px solid #e0e0e0;
+            text-align: center;
+        }
+        .test-stat .number {
+            font-size: 28px;
+            font-weight: bold;
+            color: #1a73e8;
+        }
+        .test-stat .label {
+            font-size: 14px;
+            color: #666;
+            margin-top: 5px;
+        }
+        .known-issue {
+            background: #fff3cd;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .known-issue strong {
+            color: #ff6f00;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background: #f5f5f5;
+            font-weight: bold;
+            color: #2d5016;
+        }
+        tr:hover {
+            background: #f9f9f9;
+        }
+        .note {
+            background: #e3f2fd;
+            border-left: 4px solid #1a73e8;
+            padding: 12px 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            color: #999;
+            font-size: 14px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 TSA Client (RFC 3161)</h1>
+        
+        <div class="intro">
+            <p>Jednoduchý RFC 3161 timestamp klient postavený na OpenSSL. Komunikuje s TSA servermi na vytváranie 
+            časových pečiatok a ich lokálne overenie. Klient hashuje vstupný súbor (SHA-256), zostavuje TimeStampReq 
+            a uložieva prijatý token spolu s metadátami.</p>
+        </div>
+
+        <div class="default-server">
+            <strong>Verzia:</strong> <code>v1.50</code>
+        </div>
+        
+        <div class="default-server">
+            <strong>Východzí server:</strong> <code>DigiCert</code> (<code>timestamp.digicert.com:80/</code>)
+        </div>
+
+        <h2>🔨 Build</h2>
+        <p>Potrebujete OpenSSL dev knižnice (libssl, libcrypto) pre GCC/MinGW.</p>
+        <pre><code>make</code></pre>
+        <p><strong>Výstup:</strong> <code>tsa_client_openssl.exe</code></p>
+
+        <h2>📖 Použitie</h2>
+        
+        <h3>Vytvorenie časovej pečiatky</h3>
+        <pre><code>tsa_client_openssl.exe [--server NAME] &lt;súbor&gt;</code></pre>
+        
+        <p><strong>Príklady:</strong></p>
+        <pre><code>tsa_client_openssl.exe dokument.pdf
+tsa_client_openssl.exe --server FreeTSA dokument.pdf</code></pre>
+
+        <h3>Overenie časovej pečiatky</h3>
+        <pre><code>tsa_client_openssl.exe -verify &lt;súbor&gt; [token.tsr] [trusted_cert]</code></pre>
+        
+        <p><strong>Príklady:</strong></p>
+        <pre><code>tsa_client_openssl.exe -verify dokument.pdf
+tsa_client_openssl.exe -verify dokument.pdf dokument.pdf.tsr
+tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre>
+
+        <div class="note">
+            <strong>Poznámka:</strong> Ak certifikát nie je poskytnutý, overuje sa iba podpis.
+            Ak token nie je poskytnutý, automaticky sa použije <code>&lt;súbor&gt;.tsr</code>.
+        </div>
+
+        <h2>🖥️ Podporujeme TSA Servery</h2>
+        <div class="server-list">
+            <div class="server-item">
+                <span><strong>DigiCert</strong> - <code>timestamp.digicert.com:80/</code></span>
+                <span class="status-pass">✓ PASS</span>
+            </div>
+            <div class="server-item">
+                <span><strong>FreeTSA</strong> - <code>freetsa.org:80/tsr</code></span>
+                <span class="status-pass">✓ PASS</span>
+            </div>
+            <div class="server-item">
+                <span><strong>Sectigo</strong> - <code>timestamp.sectigo.com:80/</code></span>
+                <span class="status-pass">✓ PASS</span>
+            </div>
+            <div class="server-item">
+                <span><strong>Certum</strong> - <code>time.certum.pl:80/</code></span>
+                <span class="status-pass">✓ PASS</span>
+            </div>
+            <div class="server-item">
+                <span><strong>GlobalSign</strong> - <code>timestamp.globalsign.com:80/tsa/r6advanced1</code></span>
+                <span class="status-pass">✓ PASS</span>
+            </div>
+        </div>
+
+        <h2>🔐 Certifikáty</h2>
+        <p>V adresári <code>Certificates/</code> sú dostupné TSA certifikáty:</p>
+        <ul>
+            <li><code>DigiCert.cer</code></li>
+            <li><code>FreeTSA.crt</code></li>
+            <li><code>Sectigo.crt</code></li>
+            <li><code>Certum.cer</code></li>
+            <li><code>GlobalSign.crt</code></li>
+        </ul>
+
+        <h2>📁 Vytvorené súbory</h2>
+        <p>Pri vytváraní pečiatky sa vytvoria:</p>
+        <ul>
+            <li><code>&lt;súbor&gt;.tsr</code> - RFC 3161 časový token (binárny)</li>
+            <li><code>&lt;súbor&gt;.metadata.txt</code> - metadáta (Gen čas, serial, policy, hash)</li>
+        </ul>
+
+        <h2>📊 Podporujeme formáty</h2>
+        <ul>
+            <li><strong>Hash:</strong> SHA-256</li>
+            <li><strong>Standard:</strong> RFC 3161</li>
+            <li><strong>Certifikáty:</strong> X.509 (PEM/DER)</li>
+            <li><strong>HTTP:</strong> POST, chunked encoding (RFC 7230)</li>
+        </ul>
+
+        <h2>✅ Testovanie</h2>
+        <p><strong>Posledný test (16.03.2026):</strong></p>
+        <div class="test-results">
+            <div class="test-summary">
+                <div class="test-stat">
+                    <div class="number">22</div>
+                    <div class="label">PASS</div>
+                </div>
+                <div class="test-stat">
+                    <div class="number">0</div>
+                    <div class="label">FAIL</div>
+                </div>
+                <div class="test-stat">
+                    <div class="number">22</div>
+                    <div class="label">TOTAL</div>
+                </div>
+            </div>
+        </div>
+
+        <p><strong>Funkcie:</strong></p>
+        <ul>
+            <li>✓ Timestamp pre všetky 5 serverov</li>
+            <li>✓ Verify bez certifikátu pre všetky 5 serverov</li>
+            <li>✓ Implicitné verify (file + token) pre všetky 5 serverov</li>
+            <li>✓ Cert verify pre všetky serverové certifikáty (DigiCert, FreeTSA, Sectigo, Certum, GlobalSign, custom)</li>
+        </ul>
+
+
+
+        <h2>🔧 Implementačné detaily</h2>
+        <ul>
+            <li><strong>Hashing:</strong> <code>EVP_sha256()</code> (čunkové čítanie)</li>
+            <li><strong>RFC 3161:</strong> <code>TS_REQ</code>, <code>TS_RESP</code>, <code>TS_TST_INFO</code></li>
+            <li><strong>PKCS7:</strong> <code>PKCS7_verify()</code> s <code>PKCS7_NOVERIFY</code> flagom</li>
+            <li><strong>HTTP:</strong> <code>BIO_new_connect()</code>, manuálne parsovanie headers</li>
+            <li><strong>Chunked:</strong> RFC 7230 dekódovanie</li>
+        </ul>
+
+        <div class="footer">
+            <p>TSA Client (RFC 3161) | OpenSSL variant | Verzia v1.50 | 30.03.2026</p>
+        </div>
+    </div>
+</body>
+</html>
