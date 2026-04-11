@@ -4,7 +4,7 @@
 
 - Version number/name: v1.60
 - Release date: 2026-04-09
-- Brief description of what changed: OpenSSL TSA client with improved verify-path support, including SHA-384/SHA-512 message imprint verification, ECDSA curve support, chain validation with signer-anchor fallback, and TSA EKU enforcement.
+- Brief description of what changed: OpenSSL TSA client with improved verify-path support, including SHA-384/SHA-512 message imprint verification, ECDSA curve support, chain validation with signer-anchor fallback, TSA EKU enforcement, and signer revocation checks via OCSP/CRL.
 
 ## Features & Functionality
 
@@ -24,6 +24,7 @@
   - Supports optional user-provided certificate trust material.
   - Verifies message imprint algorithms SHA-256, SHA-384, and SHA-512 in the verify path.
   - Supports RSA and ECDSA signer verification, including ECDSA P-256, P-384, and P-521.
+  - Performs signer certificate revocation checks using OCSP and CRL Distribution Points.
 - File format support:
   - Input files are treated as binary streams.
   - Certificate inputs may be PEM or DER (`.crt`, `.cer`, `.pem`, `.der`).
@@ -33,6 +34,7 @@
   - Added certificate chain validation in verify mode.
   - Added a signer-anchor fallback when no certificate is supplied and the default trust store cannot build the chain.
   - Added TSA EKU enforcement (`id-kp-timeStamping`).
+  - Added online certificate revocation checking through OCSP and CRL (HTTP endpoints from certificate extensions).
   - No removed user-facing features.
 
 ## Performance & Speed
@@ -58,6 +60,7 @@
   - Uses the system/OpenSSL trust store when no certificate is provided, then falls back to the signer certificate as an anchor if the default store cannot build the chain.
   - Uses a supplied certificate as trust anchor material when provided.
   - Enforces TSA extended key usage (`id-kp-timeStamping`).
+  - Checks signer revocation via OCSP responder URL and CRL Distribution Points when available.
 - Security fixes or vulnerabilities addressed:
   - Replaced heuristic signer matching with chain validation and signer-anchor fallback.
   - Removed dependency on exact certificate-name matching for successful verify.

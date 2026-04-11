@@ -32,6 +32,7 @@
 #include <openssl/pem.h>
 #include <openssl/pkcs7.h>
 #include <openssl/rand.h>
+#include <openssl/ocsp.h>
 #include <openssl/ts.h>
 #include <openssl/core_names.h>
 #include <openssl/x509_vfy.h>
@@ -56,14 +57,15 @@ typedef struct {
     const char *host; /* Hostname servera */
     int port;         /* TCP port servera */
     const char *path; /* URL cesta pre RFC 3161 request */
+    const char *cert; /* Predvoleny certifikat servera v priecinku Certificates */
 } tsa_server_config_t;
 
 static const tsa_server_config_t TSA_SERVERS[] = {
-    {"DigiCert", "timestamp.digicert.com", 80, "/"},
-    {"FreeTSA", "freetsa.org", 80, "/tsr"},
-    {"Sectigo", "timestamp.sectigo.com", 80, "/"},
-    {"Certum", "time.certum.pl", 80, "/"},
-    {"GlobalSign", "timestamp.globalsign.com", 80, "/tsa/r6advanced1"}
+    {"DigiCert", "timestamp.digicert.com", 80, "/", "Certificates/DigiCert.cer"},
+    {"FreeTSA", "freetsa.org", 80, "/tsr", "Certificates/FreeTSA.crt"},
+    {"Sectigo", "timestamp.sectigo.com", 80, "/", "Certificates/Sectigo.crt"},
+    {"Certum", "time.certum.pl", 80, "/", "Certificates/Certum.cer"},
+    {"GlobalSign", "timestamp.globalsign.com", 80, "/tsa/r6advanced1", "Certificates/GlobalSign.crt"}
 };
 
 #define TSA_SERVER_COUNT (sizeof(TSA_SERVERS) / sizeof(TSA_SERVERS[0]))
@@ -145,6 +147,29 @@ static const tsa_server_config_t *find_tsa_server(const char *name) {
     }
 
     return NULL;
+}
+
+/******************************************************************************
+* Funkcia:    file_exists
+*
+* Popis:      Jednoducha kontrola existencie suboru
+*
+* Navrat:     1 ak subor existuje, inak 0
+*****************************************************************************/
+static int file_exists(const char *path) {
+    FILE *fp;
+
+    if (!path) {
+        return 0;
+    }
+
+    fp = fopen(path, "rb");
+    if (!fp) {
+        return 0;
+    }
+
+    fclose(fp);
+    return 1;
 }
 
 /******************************************************************************
@@ -814,6 +839,440 @@ static X509 *load_x509_any(const char *path) {
 }
 
 /******************************************************************************
+* Funkcia:    parse_http_url
+*
+* Popis:      Rozparsuje HTTP URL na host, port a path
+*
+* Navrat:     1 pri uspechu, 0 pri chybe
+*****************************************************************************/
+static int parse_http_url(const char *url, char *host, size_t host_len,
+                          int *port, char *path, size_t path_len) {
+    const char *p;
+    const char *slash;
+    const char *host_end;
+    const char *colon;
+    size_t hlen;
+
+    if (!url || !host || !port || !path || host_len == 0 || path_len == 0) {
+        return 0;
+    }
+
+    if (strncmp(url, "http://", 7) != 0) {
+        return 0;
+    }
+
+    p = url + 7;
+    if (*p == '\0') {
+        return 0;
+    }
+
+    slash = strchr(p, '/');
+    host_end = slash ? slash : (p + strlen(p));
+    colon = NULL;
+    {
+        const char *c;
+        for (c = p; c < host_end; c++) {
+            if (*c == ':') {
+                colon = c;
+                break;
+            }
+        }
+    }
+
+    if (colon) {
+        hlen = (size_t)(colon - p);
+        if (hlen == 0 || hlen >= host_len) {
+            return 0;
+        }
+        memcpy(host, p, hlen);
+        host[hlen] = '\0';
+        *port = atoi(colon + 1);
+        if (*port <= 0 || *port > 65535) {
+            return 0;
+        }
+    } else {
+        hlen = (size_t)(host_end - p);
+        if (hlen == 0 || hlen >= host_len) {
+            return 0;
+        }
+        memcpy(host, p, hlen);
+        host[hlen] = '\0';
+        *port = 80;
+    }
+
+    if (slash) {
+        if (strlen(slash) >= path_len) {
+            return 0;
+        }
+        strcpy(path, slash);
+    } else {
+        if (path_len < 2) {
+            return 0;
+        }
+        strcpy(path, "/");
+    }
+
+    return 1;
+}
+
+/******************************************************************************
+* Funkcia:    fetch_http_binary
+*
+* Popis:      Stiahne binarne telo odpovede cez HTTP GET
+*
+* Navrat:     1 pri uspechu, 0 pri chybe
+*****************************************************************************/
+static int fetch_http_binary(const char *url, buffer_t *out_body) {
+    BIO *bio = NULL;
+    BIO *buf = NULL;
+    char host[256];
+    int port = 0;
+    char path[1024];
+    char target[300];
+    char header[1400];
+    unsigned char tmp[READ_CHUNK];
+    int n;
+    int status = 0;
+    int is_ts_reply = 0;
+    int ok = 0;
+    unsigned char *raw = NULL;
+    size_t raw_len = 0;
+
+    if (!parse_http_url(url, host, sizeof(host), &port, path, sizeof(path))) {
+        return 0;
+    }
+
+    snprintf(target, sizeof(target), "%s:%d", host, port);
+
+    bio = BIO_new_connect(target);
+    if (!bio) {
+        goto cleanup;
+    }
+    if (BIO_do_connect(bio) <= 0) {
+        goto cleanup;
+    }
+
+    snprintf(header, sizeof(header),
+             "GET %s HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "Connection: close\r\n\r\n",
+             path, host);
+
+    if (BIO_write(bio, header, (int)strlen(header)) <= 0) {
+        goto cleanup;
+    }
+    if (BIO_flush(bio) <= 0) {
+        goto cleanup;
+    }
+
+    buf = BIO_new(BIO_s_mem());
+    if (!buf) {
+        goto cleanup;
+    }
+
+    while ((n = BIO_read(bio, tmp, sizeof(tmp))) > 0) {
+        if (BIO_write(buf, tmp, n) != n) {
+            goto cleanup;
+        }
+    }
+
+    raw_len = BIO_get_mem_data(buf, (char **)&raw);
+    if (raw_len == 0 || !raw) {
+        goto cleanup;
+    }
+
+    {
+        buffer_t raw_copy = {0};
+        raw_copy.data = (unsigned char *)malloc(raw_len);
+        if (!raw_copy.data) {
+            goto cleanup;
+        }
+        raw_copy.len = raw_len;
+        memcpy(raw_copy.data, raw, raw_len);
+
+        if (!parse_http_response(raw_copy.data, raw_copy.len, out_body, &status, &is_ts_reply)) {
+            buffer_free(&raw_copy);
+            goto cleanup;
+        }
+        buffer_free(&raw_copy);
+    }
+
+    if (status != 200) {
+        buffer_free(out_body);
+        goto cleanup;
+    }
+
+    ok = 1;
+
+cleanup:
+    if (!ok) {
+        buffer_free(out_body);
+    }
+    BIO_free_all(buf);
+    BIO_free_all(bio);
+    return ok;
+}
+
+/******************************************************************************
+* Funkcia:    check_revocation_crl
+*
+* Popis:      Overi odvolanie certifikatu cez CRL Distribution Points (HTTP)
+*
+* Navrat:     1 ak certifikat nie je odvolany, 0 ak odvolany alebo chyba
+*****************************************************************************/
+static int check_revocation_crl(X509 *cert, X509 *issuer) {
+    STACK_OF(DIST_POINT) *dps = NULL;
+    int i;
+    int ok = 1;
+
+    dps = X509_get_ext_d2i(cert, NID_crl_distribution_points, NULL, NULL);
+    if (!dps) {
+        return 1;
+    }
+
+    for (i = 0; i < sk_DIST_POINT_num(dps); i++) {
+        DIST_POINT *dp = sk_DIST_POINT_value(dps, i);
+        int j;
+
+        if (!dp || !dp->distpoint || dp->distpoint->type != 0 || !dp->distpoint->name.fullname) {
+            continue;
+        }
+
+        for (j = 0; j < sk_GENERAL_NAME_num(dp->distpoint->name.fullname); j++) {
+            GENERAL_NAME *gen = sk_GENERAL_NAME_value(dp->distpoint->name.fullname, j);
+            const char *url;
+            buffer_t crl_body = {0};
+            BIO *bio = NULL;
+            X509_CRL *crl = NULL;
+            EVP_PKEY *issuer_key = NULL;
+            X509_REVOKED *rev = NULL;
+
+            if (!gen || gen->type != GEN_URI || !gen->d.uniformResourceIdentifier) {
+                continue;
+            }
+
+            url = (const char *)ASN1_STRING_get0_data(gen->d.uniformResourceIdentifier);
+            if (!url || strncmp(url, "http://", 7) != 0) {
+                continue;
+            }
+
+            if (!fetch_http_binary(url, &crl_body)) {
+                continue;
+            }
+
+            bio = BIO_new_mem_buf(crl_body.data, (int)crl_body.len);
+            if (!bio) {
+                buffer_free(&crl_body);
+                continue;
+            }
+
+            crl = d2i_X509_CRL_bio(bio, NULL);
+            if (!crl) {
+                BIO_seek(bio, 0);
+                crl = PEM_read_bio_X509_CRL(bio, NULL, NULL, NULL);
+            }
+            if (!crl) {
+                BIO_free(bio);
+                buffer_free(&crl_body);
+                continue;
+            }
+
+            issuer_key = X509_get_pubkey(issuer);
+            if (!issuer_key || X509_CRL_verify(crl, issuer_key) != 1) {
+                EVP_PKEY_free(issuer_key);
+                X509_CRL_free(crl);
+                BIO_free(bio);
+                buffer_free(&crl_body);
+                continue;
+            }
+
+            if (X509_CRL_get0_by_cert(crl, &rev, cert) == 1) {
+                fprintf(stderr, "Certifikat je odvolany podla CRL.\n");
+                ok = 0;
+            }
+
+            EVP_PKEY_free(issuer_key);
+            X509_CRL_free(crl);
+            BIO_free(bio);
+            buffer_free(&crl_body);
+
+            if (!ok) {
+                break;
+            }
+        }
+
+        if (!ok) {
+            break;
+        }
+    }
+
+    sk_DIST_POINT_pop_free(dps, DIST_POINT_free);
+
+    return ok;
+}
+
+/******************************************************************************
+* Funkcia:    check_revocation_ocsp
+*
+* Popis:      Overi odvolanie certifikatu cez OCSP (HTTP)
+*
+* Navrat:     1 ak certifikat nie je odvolany, 0 ak odvolany alebo chyba
+*****************************************************************************/
+static int check_revocation_ocsp(X509 *cert, X509 *issuer,
+                                 STACK_OF(X509) *untrusted, X509_STORE *store) {
+    STACK_OF(OPENSSL_STRING) *ocsp_urls = NULL;
+    const char *url = NULL;
+    char *host = NULL;
+    char *path = NULL;
+    char *port = NULL;
+    int use_ssl = 0;
+    char target[300];
+    BIO *bio = NULL;
+    OCSP_REQUEST *req = NULL;
+    OCSP_RESPONSE *resp = NULL;
+    OCSP_BASICRESP *basic = NULL;
+    OCSP_CERTID *id = NULL;
+    int i;
+    int status;
+    int reason;
+    ASN1_GENERALIZEDTIME *rev = NULL;
+    ASN1_GENERALIZEDTIME *thisupd = NULL;
+    ASN1_GENERALIZEDTIME *nextupd = NULL;
+    int ok = 0;
+
+    ocsp_urls = X509_get1_ocsp(cert);
+    if (!ocsp_urls || sk_OPENSSL_STRING_num(ocsp_urls) <= 0) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    for (i = 0; i < sk_OPENSSL_STRING_num(ocsp_urls); i++) {
+        const char *candidate = sk_OPENSSL_STRING_value(ocsp_urls, i);
+        if (candidate && strncmp(candidate, "http://", 7) == 0) {
+            url = candidate;
+            break;
+        }
+    }
+
+    if (!url) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    if (!OCSP_parse_url(url, &host, &port, &path, &use_ssl)) {
+        ok = 1;
+        goto cleanup;
+    }
+    if (use_ssl) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    snprintf(target, sizeof(target), "%s:%s", host, port);
+    bio = BIO_new_connect(target);
+    if (!bio || BIO_do_connect(bio) <= 0) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    req = OCSP_REQUEST_new();
+    if (!req) {
+        goto cleanup;
+    }
+
+    id = OCSP_cert_to_id(NULL, cert, issuer);
+    if (!id) {
+        goto cleanup;
+    }
+
+    if (!OCSP_request_add0_id(req, id)) {
+        goto cleanup;
+    }
+    id = NULL;
+
+    resp = OCSP_sendreq_bio(bio, path, req);
+    if (!resp) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    if (OCSP_response_status(resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    basic = OCSP_response_get1_basic(resp);
+    if (!basic) {
+        goto cleanup;
+    }
+
+    if (OCSP_basic_verify(basic, untrusted, store, 0) <= 0) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    id = OCSP_cert_to_id(NULL, cert, issuer);
+    if (!id) {
+        goto cleanup;
+    }
+
+    if (!OCSP_resp_find_status(basic, id, &status, &reason, &rev, &thisupd, &nextupd)) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    if (!OCSP_check_validity(thisupd, nextupd, 300L, -1L)) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    if (status == V_OCSP_CERTSTATUS_REVOKED) {
+        fprintf(stderr, "Certifikat je odvolany podla OCSP.\n");
+        ok = 0;
+        goto cleanup;
+    }
+
+    if (status == V_OCSP_CERTSTATUS_UNKNOWN) {
+        ok = 1;
+        goto cleanup;
+    }
+
+    ok = 1;
+
+cleanup:
+    OPENSSL_free(host);
+    OPENSSL_free(path);
+    OPENSSL_free(port);
+    OCSP_CERTID_free(id);
+    OCSP_BASICRESP_free(basic);
+    OCSP_RESPONSE_free(resp);
+    OCSP_REQUEST_free(req);
+    BIO_free_all(bio);
+    X509_email_free(ocsp_urls);
+    return ok;
+}
+
+/******************************************************************************
+* Funkcia:    check_revocation_status
+*
+* Popis:      Overi odvolanie certifikatu cez OCSP, pri chybe fallback na CRL
+*
+* Navrat:     1 ak certifikat nie je odvolany, 0 ak odvolany
+*****************************************************************************/
+static int check_revocation_status(X509 *cert, X509 *issuer,
+                                   STACK_OF(X509) *untrusted, X509_STORE *store) {
+    if (!check_revocation_ocsp(cert, issuer, untrusted, store)) {
+        return 0;
+    }
+
+    if (!check_revocation_crl(cert, issuer)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+/******************************************************************************
 * Funkcia:    verify_token_signature
 *
 * Popis:      Overi PKCS7 podpis v timestamp tokene a volitelny trusted cert
@@ -830,7 +1289,10 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
     EVP_PKEY *signer_key = NULL;
     int signer_key_type;
     int verify_err;
+    int used_system_fallback = 0;
     int verified = 0;
+    STACK_OF(X509) *verified_chain = NULL;
+    X509 *issuer = NULL;
 
     const char *verify_fail_msg = "Validacia certifikatovej retaze zlyhala: %s\n";
 
@@ -966,27 +1428,16 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
     X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
 
     verified = (X509_verify_cert(store_ctx) == 1);
-    if (!verified && !trusted_cert) {
-        verify_err = X509_STORE_CTX_get_error(store_ctx);
+    if (!verified && trusted_cert) {
+        X509_STORE_CTX_free(store_ctx);
+        store_ctx = NULL;
+        X509_STORE_free(store);
+        store = X509_STORE_new();
+        if (!store) {
+            goto cleanup;
+        }
 
-        /* Ak systemovy/OpenSSL trust store nevie vybudovat retaz,
-         * skusime fallback na signer certifikat ako trusted anchor.
-         * To zachova pouzitelnost overenia aj na strojoch bez plneho trust store. */
-        if (verify_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY ||
-            verify_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT ||
-            verify_err == X509_V_ERR_CERT_UNTRUSTED) {
-            X509_STORE_CTX_free(store_ctx);
-            store_ctx = NULL;
-            X509_STORE_free(store);
-            store = X509_STORE_new();
-            if (!store) {
-                goto cleanup;
-            }
-
-            if (X509_STORE_add_cert(store, signer) != 1) {
-                goto cleanup;
-            }
-
+        if (X509_STORE_set_default_paths(store) == 1) {
             store_ctx = X509_STORE_CTX_new();
             if (!store_ctx) {
                 goto cleanup;
@@ -998,12 +1449,60 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
 
             X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
             verified = (X509_verify_cert(store_ctx) == 1);
+        } else {
+            verified = 0;
+            ERR_clear_error();
         }
+
+        used_system_fallback = 1;
+    }
+
+    if (!verified && (!trusted_cert || used_system_fallback)) {
+        X509_STORE_CTX_free(store_ctx);
+        store_ctx = NULL;
+        X509_STORE_free(store);
+        store = X509_STORE_new();
+        if (!store) {
+            goto cleanup;
+        }
+
+        if (X509_STORE_add_cert(store, signer) != 1) {
+            goto cleanup;
+        }
+
+        store_ctx = X509_STORE_CTX_new();
+        if (!store_ctx) {
+            goto cleanup;
+        }
+
+        if (X509_STORE_CTX_init(store_ctx, store, signer, untrusted) != 1) {
+            goto cleanup;
+        }
+
+        X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
+        verified = (X509_verify_cert(store_ctx) == 1);
     }
 
     if (!verified) {
         verify_err = store_ctx ? X509_STORE_CTX_get_error(store_ctx) : X509_V_ERR_CERT_UNTRUSTED;
         fprintf(stderr, verify_fail_msg, X509_verify_cert_error_string(verify_err));
+        goto cleanup;
+    }
+
+    verified_chain = X509_STORE_CTX_get1_chain(store_ctx);
+    if (!verified_chain || sk_X509_num(verified_chain) < 2) {
+        fprintf(stderr, "Nepodarilo sa ziskat issuer certifikat pre kontrolu odvolania.\n");
+        goto cleanup;
+    }
+
+    issuer = sk_X509_value(verified_chain, 1);
+    if (!issuer) {
+        fprintf(stderr, "Nepodarilo sa ziskat issuer certifikat pre kontrolu odvolania.\n");
+        goto cleanup;
+    }
+
+    if (!check_revocation_status(signer, issuer, untrusted, store)) {
+        fprintf(stderr, "Kontrola odvolania certifikatu (CRL/OCSP) zlyhala.\n");
         goto cleanup;
     }
 
@@ -1015,6 +1514,7 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
     EVP_PKEY_free(signer_key);
     X509_STORE_CTX_free(store_ctx);
     X509_STORE_free(store);
+    sk_X509_pop_free(verified_chain, X509_free);
     sk_X509_free(signers);
     return 1;
 
@@ -1022,6 +1522,7 @@ cleanup:
     EVP_PKEY_free(signer_key);
     X509_STORE_CTX_free(store_ctx);
     X509_STORE_free(store);
+    sk_X509_pop_free(verified_chain, X509_free);
     sk_X509_free(signers);
     return 0;
 }
@@ -1325,6 +1826,7 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
     }
 
     printf("        >> Podpis uspesne overeny\n\n");
+    printf("        >> Kontrola odvolania (OCSP/CRL) uspesna\n\n");
     printf("  [5/5] Porovnavam hashe...\n");
 
     if (trusted_cert_path) {
@@ -1459,6 +1961,7 @@ int main(int argc, char **argv) {
     int arg_index = 1;
     int ok;
     int implicit_verify = 0;
+    int server_explicitly_selected = 0;
 
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
@@ -1486,6 +1989,7 @@ int main(int argc, char **argv) {
             port = selected_server->port;
             path = selected_server->path;
             server_name = selected_server->name;
+            server_explicitly_selected = 1;
             arg_index += 2;
 
         } else if (strcmp(argv[arg_index], "-verify") == 0) {
@@ -1537,6 +2041,11 @@ int main(int argc, char **argv) {
             return 1;
         }
 
+        if (!cert_path && server_explicitly_selected &&
+            selected_server->cert && file_exists(selected_server->cert)) {
+            cert_path = selected_server->cert;
+        }
+
         ok = verify_timestamp(file_path, token_path, cert_path);
         if (!ok) {
             print_openssl_errors();
@@ -1573,6 +2082,11 @@ int main(int argc, char **argv) {
                 EVP_cleanup();
                 ERR_free_strings();
                 return 1;
+            }
+
+            if (!cert_path && server_explicitly_selected &&
+                selected_server->cert && file_exists(selected_server->cert)) {
+                cert_path = selected_server->cert;
             }
 
             ok = verify_timestamp(file_path, token_path ? token_path : default_token, cert_path);

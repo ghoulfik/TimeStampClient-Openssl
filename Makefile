@@ -2,14 +2,13 @@ CC       := gcc
 SRC      := tsa_client_openssl.c
 OBJ      := $(SRC:.c=.o)
 
-UNAME_S := $(shell uname -s 2>/dev/null)
-
 ifeq ($(OS),Windows_NT)
 	TARGET  := tsa_client_openssl.exe
 	CFLAGS  := -Wall -Wextra -O2 -I"C:/OPENSSL/include"
 	LDFLAGS := -L"C:/OPENSSL/lib" -lssl -lcrypto -lws2_32
 	RM_CMD  := cmd /C del /Q /F
 else
+	UNAME_S := $(shell uname -s 2>/dev/null)
 	TARGET := tsa_client_openssl
 	CFLAGS := -Wall -Wextra -O2
 	OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)

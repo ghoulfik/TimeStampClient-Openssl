@@ -219,14 +219,24 @@ tsa_client_openssl.exe --server FreeTSA dokument.pdf</code></pre>
 
         <h3>Overenie časovej pečiatky</h3>
         <pre><code>tsa_client_openssl.exe -verify &lt;súbor&gt; [token.tsr] [trusted_cert]</code></pre>
+
+        <p>Mozete pouzit aj <code>--server</code> pred <code>-verify</code>, napriklad:</p>
+        <pre><code>tsa_client_openssl.exe --server FreeTSA -verify dokument.pdf</code></pre>
+        <p>Ak nezadate <code>[trusted_cert]</code> a zaroven pouzijete <code>--server</code>, klient automaticky vyberie
+        zodpovedajuci certifikat z adresara <code>Certificates/</code>.</p>
         
         <p><strong>Príklady:</strong></p>
         <pre><code>tsa_client_openssl.exe -verify dokument.pdf
 tsa_client_openssl.exe -verify dokument.pdf dokument.pdf.tsr
-tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre>
+    tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt
+    tsa_client_openssl.exe --server DigiCert -verify dokument.pdf</code></pre>
 
         <div class="note">
             <strong>Poznámka:</strong> Ak certifikát nie je poskytnutý, overenie najprv pouzije systemovy/OpenSSL trust store a pri potrebe sa prepne na fallback s podpisovym certifikatom ako trust anchor.
+            Ak certifikat je poskytnuty, pouzije sa ako trust anchor pre validaciu retaze.
+            Overenie vykonava validaciu certifikatovej retaze a kontroluje EKU id-kp-timeStamping.
+            Overenie vykonava aj kontrolu odvolania certifikatu signera cez OCSP a CRL (CRL Distribution Points).
+            Ak online odpoved nie je dostupna alebo certifikat neobsahuje OCSP/CRL URL, klient vypise upozornenie a pokracuje v overeni retaze.
             Ak token nie je poskytnutý, automaticky sa použije <code>&lt;súbor&gt;.tsr</code>.
         </div>
 
@@ -275,6 +285,9 @@ tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre
         <ul>
             <li><strong>Hash (request path):</strong> SHA-256</li>
             <li><strong>Hash (verify path):</strong> SHA-256, SHA-384, SHA-512</li>
+            <li><strong>Podpis signer certifikatu (verify path):</strong> RSA, ECDSA P-256, ECDSA P-384, ECDSA P-521</li>
+            <li><strong>Validacia certifikatov (verify path):</strong> plna X.509 retaz (X509_verify_cert)</li>
+            <li><strong>Revokacia certifikatov (verify path):</strong> OCSP (HTTP responder) + CRL (HTTP CRL Distribution Points)</li>
             <li><strong>Standard:</strong> RFC 3161</li>
             <li><strong>Certifikáty:</strong> X.509 (PEM/DER)</li>
             <li><strong>HTTP:</strong> POST, chunked encoding (RFC 7230)</li>
