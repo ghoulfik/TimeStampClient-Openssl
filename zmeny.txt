@@ -44,3 +44,10 @@ v1.50 | 03.30.2026 |
  - Vylepsene verify_token_signature() pre vyhladavanie zhody certifikatov napriec celou vlozenou CA retazou (chain) vo vnutri PKCS7
  - Pridana fallback kontrola overenia cez verejny kluc
  - Problem s certifikatmi Sectigo a GlobalSign uspesne vyrieseny extrakciou spravnych podpisovatelskych certifikatov priamo z tokenov
+
+v1.60 | 04.09.2026 | 
+ - Rozsireny verify path: SHA-384/SHA-512 message imprint, ECDSA P-256/P-384/P-521
+ - Plna X.509 certificate chain validation s X509_verify_cert()
+ - Enforce TSA EKU id-kp-timeStamping, default trust store fallback
+ - Algoritmus: request SHA-256, verify SHA-256/SHA-384/SHA-512
+ - Signer support: RSA a ECDSA krivky

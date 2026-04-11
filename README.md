@@ -1,10 +1,10 @@
 # TSA Client (RFC 3161)
 
 Jednoduchy RFC 3161 timestamp klient postaveny na OpenSSL. Komunikuje s TSA servermi na vytvaranie
-casovych peciaток a ich lokalne overenie. Klient zhashuje vstupny subor (SHA-256), zostavuje TimeStampReq
+casovych peciatok a ich lokalne overenie. Klient zhashuje vstupny subor (SHA-256), zostavuje TimeStampReq
 a ulozuje prijaty token spolu s metadatami.
 
-**Verzia**: `v1.50`
+**Verzia**: `v1.60`
 
 **Vychodzi server**: `DigiCert` (`timestamp.digicert.com:80/`)
 
@@ -16,11 +16,7 @@ Potrebujete OpenSSL dev kniznice (libssl, libcrypto) pre GCC/MinGW.
 make
 ```
 
-Vystup: `tsa_client_openssl.exe` na Windows, `tsa_client_openssl` na Linux/macOS.
-
-Na Linuxe a macOS Makefile pouziva `pkg-config` pre OpenSSL, ak je dostupny; inak skusa klasicke `-lssl -lcrypto`.
-
-GitHub Actions CI bezi na `ubuntu-latest` a `macos-latest` a overuje build aj zakladny CLI smoke test.
+Vystup: `tsa_client_openssl.exe`
 
 ## Pouzitie
 
@@ -49,7 +45,9 @@ tsa_client_openssl.exe -verify dokument.pdf dokument.pdf.tsr
 tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt
 ```
 
-Poznamka: Ak certifikat nie je poskytnuty, overuje sa iba podpis.
+Poznamka: Ak certifikat nie je poskytnuty, overenie pouzije systemovy/OpenSSL trust store.
+Ak certifikat je poskytnuty, pouzije sa ako trust anchor pre validaciu retaze.
+Overenie vykonava plnu validaciu certifikatovej retaze a kontroluje EKU id-kp-timeStamping.
 Ak token nie je poskytnuty, automaticky sa pouzije `<subor>.tsr`.
 
 ## Podporovane TSA Servery
@@ -77,7 +75,10 @@ Pri vytvarani peciatky sa vytvoria:
 
 ## Podporovane formaty
 
-- **Hash**: SHA-256
+- **Hash (request path)**: SHA-256
+- **Hash (verify path)**: SHA-256, SHA-384, SHA-512
+- **Podpis signer certifikatu (verify path)**: RSA, ECDSA P-256, ECDSA P-384, ECDSA P-521
+- **Validacia certifikatov (verify path)**: plna X.509 retaz (X509_verify_cert)
 - **Standard**: RFC 3161
 - **Certifikaty**: X.509 (PEM/DER)
 - **HTTP**: POST, chunked encoding (RFC 7230)

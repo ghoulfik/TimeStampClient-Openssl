@@ -2,8 +2,8 @@
  * File: tsa_client_openssl.c
  * Project: TSA klient (RFC 3161)
  * Autor: Anton Kozar
- * Datum: 03.30.2026
- * Verzia: v1.50
+ * Datum: 04.09.2026
+ * Verzia: v1.60
  *
  * Popis:
  * - OpenSSL implementacia TimeStamp Authority klienta podla RFC 3161.
@@ -17,10 +17,6 @@
 #include <string.h>
 #include <ctype.h>
 
-#ifndef _WIN32
-#include <strings.h>
-#endif
-
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -30,7 +26,14 @@
 #include <openssl/pkcs7.h>
 #include <openssl/rand.h>
 #include <openssl/ts.h>
+#include <openssl/core_names.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/x509v3.h>
 #include <openssl/x509.h>
+
+#if OPENSSL_VERSION_NUMBER < 0x30000000L
+#include <openssl/ec.h>
+#endif
 
 /* Predvolena konfiguracia TSA endpointu */
 #define DEFAULT_TSA_HOST "timestamp.digicert.com"
@@ -62,17 +65,6 @@ typedef struct {
     unsigned char *data; /* Ukazovatel na dynamicky alokovane data */
     size_t len;          /* Aktualna dlzka dat v bajtoch */
 } buffer_t;
-
-#ifdef _WIN32
-#define strcasecmp _stricmp
-#endif
-
-static void openssl_cleanup(void) {
-#if OPENSSL_VERSION_NUMBER < 0x30000000L
-    EVP_cleanup();
-    ERR_free_strings();
-#endif
-}
 
 /******************************************************************************
 * Funkcia:    basename_path
@@ -115,10 +107,10 @@ static int is_certificate_path(const char *path) {
         return 0;
     }
 
-    if (strcasecmp(ext, ".crt") == 0 ||
-        strcasecmp(ext, ".cer") == 0 ||
-        strcasecmp(ext, ".pem") == 0 ||
-        strcasecmp(ext, ".der") == 0) {
+    if (_stricmp(ext, ".crt") == 0 ||
+        _stricmp(ext, ".cer") == 0 ||
+        _stricmp(ext, ".pem") == 0 ||
+        _stricmp(ext, ".der") == 0) {
         return 1;
     }
 
@@ -140,7 +132,7 @@ static const tsa_server_config_t *find_tsa_server(const char *name) {
     }
 
     for (i = 0; i < TSA_SERVER_COUNT; i++) {
-        if (strcasecmp(name, TSA_SERVERS[i].name) == 0) {
+        if (_stricmp(name, TSA_SERVERS[i].name) == 0) {
             return &TSA_SERVERS[i];
         }
     }
@@ -233,25 +225,117 @@ static int write_file(const char *path, const unsigned char *data, size_t len) {
 }
 
 /******************************************************************************
-* Funkcia:    sha256_file
+* Funkcia:    digest_name_from_nid
 *
-* Popis:      Vypocita SHA-256 hash pre zadany subor
+* Popis:      Vrati textovy nazov podporovaneho digest algoritmu
+*
+* Navrat:     Nazov algoritmu alebo "UNKNOWN"
+*****************************************************************************/
+static const char *digest_name_from_nid(int nid) {
+    switch (nid) {
+        case NID_sha256:
+            return "SHA-256";
+        case NID_sha384:
+            return "SHA-384";
+        case NID_sha512:
+            return "SHA-512";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+/******************************************************************************
+* Funkcia:    digest_from_nid
+*
+* Popis:      Namapuje NID digestu na EVP_MD pre podporovane algoritmy
+*
+* Navrat:     Ukazovatel na EVP_MD alebo NULL pri nepodporovanom algoritme
+*****************************************************************************/
+static const EVP_MD *digest_from_nid(int nid) {
+    switch (nid) {
+        case NID_sha256:
+            return EVP_sha256();
+        case NID_sha384:
+            return EVP_sha384();
+        case NID_sha512:
+            return EVP_sha512();
+        default:
+            return NULL;
+    }
+}
+
+/******************************************************************************
+* Funkcia:    get_imprint_digest_info
+*
+* Popis:      Z TS message imprintu ziska digest algoritmus a dlzku
 *
 * Navrat:     1 pri uspechu, 0 pri chybe
 *****************************************************************************/
-static int sha256_file(const char *path, unsigned char digest[32]) {
+static int get_imprint_digest_info(TS_MSG_IMPRINT *imprint,
+                                   const EVP_MD **out_md,
+                                   int *out_nid,
+                                   int *out_len) {
+    X509_ALGOR *alg = NULL;
+    const ASN1_OBJECT *obj = NULL;
+    int nid;
+    const EVP_MD *md;
+    int md_len;
+
+    if (!imprint || !out_md || !out_nid || !out_len) {
+        return 0;
+    }
+
+    alg = TS_MSG_IMPRINT_get_algo(imprint);
+    if (!alg) {
+        return 0;
+    }
+
+    X509_ALGOR_get0(&obj, NULL, NULL, alg);
+    if (!obj) {
+        return 0;
+    }
+
+    nid = OBJ_obj2nid(obj);
+    md = digest_from_nid(nid);
+    if (!md) {
+        return 0;
+    }
+
+    md_len = EVP_MD_get_size(md);
+    if (md_len <= 0) {
+        return 0;
+    }
+
+    *out_md = md;
+    *out_nid = nid;
+    *out_len = md_len;
+    return 1;
+}
+
+/******************************************************************************
+* Funkcia:    digest_file
+*
+* Popis:      Vypocita digest pre zadany subor podla zvoleneho EVP_MD
+*
+* Navrat:     1 pri uspechu, 0 pri chybe
+*****************************************************************************/
+static int digest_file(const char *path, const EVP_MD *md,
+                       unsigned char *digest, unsigned int *digest_len) {
     EVP_MD_CTX *ctx = NULL;
     FILE *fp = NULL;
     unsigned char chunk[READ_CHUNK];
     size_t n;
-    unsigned int digest_len = 0;
     int ok = 0;
+
+    if (!path || !md || !digest || !digest_len) {
+        return 0;
+    }
 
     ctx = EVP_MD_CTX_new();
     if (!ctx) {
         goto cleanup;
     }
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1) {
+    if (EVP_DigestInit_ex(ctx, md, NULL) != 1) {
         goto cleanup;
     }
 
@@ -270,7 +354,7 @@ static int sha256_file(const char *path, unsigned char digest[32]) {
         goto cleanup;
     }
 
-    if (EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1 || digest_len != 32) {
+    if (EVP_DigestFinal_ex(ctx, digest, digest_len) != 1) {
         goto cleanup;
     }
 
@@ -282,6 +366,23 @@ cleanup:
     }
     EVP_MD_CTX_free(ctx);
     return ok;
+}
+
+/******************************************************************************
+* Funkcia:    sha256_file
+*
+* Popis:      Vypocita SHA-256 hash pre zadany subor
+*
+* Navrat:     1 pri uspechu, 0 pri chybe
+*****************************************************************************/
+static int sha256_file(const char *path, unsigned char digest[32]) {
+    unsigned int digest_len = 0;
+
+    if (!digest_file(path, EVP_sha256(), digest, &digest_len)) {
+        return 0;
+    }
+
+    return digest_len == 32;
 }
 
 /******************************************************************************
@@ -712,9 +813,16 @@ static X509 *load_x509_any(const char *path) {
 *
 * Navrat:     1 pri uspechu, 0 pri chybe
 *****************************************************************************/
-static int verify_token_signature(PKCS7 *token, X509 *trusted_cert) {
+static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
+                                  char *signer_alg_buf, size_t signer_alg_buf_len) {
     STACK_OF(X509) *signers = NULL;
     X509 *signer = NULL;
+    STACK_OF(X509) *untrusted = NULL;
+    X509_STORE *store = NULL;
+    X509_STORE_CTX *store_ctx = NULL;
+    EVP_PKEY *signer_key = NULL;
+    int signer_key_type;
+    int verify_err;
 
     signers = PKCS7_get0_signers(token, NULL, 0);
     if (!signers || sk_X509_num(signers) <= 0) {
@@ -729,57 +837,148 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert) {
         return 0;
     }
 
-    if (trusted_cert) {
-        int cert_match = 0;
+    signer_key = X509_get_pubkey(signer);
+    if (!signer_key) {
+        fprintf(stderr, "Nepodarilo sa ziskat verejny kluc signera.\n");
+        goto cleanup;
+    }
 
-        /* 1. Presna zhoda s certifikatom signera */
-        if (X509_cmp(signer, trusted_cert) == 0) {
-            cert_match = 1;
+    signer_key_type = EVP_PKEY_base_id(signer_key);
+    if (signer_key_type == EVP_PKEY_RSA) {
+        if (signer_alg_buf && signer_alg_buf_len > 0) {
+            snprintf(signer_alg_buf, signer_alg_buf_len, "RSA");
         }
+    } else if (signer_key_type == EVP_PKEY_EC) {
+        const char *curve_name = NULL;
 
-        /* 2. Kontrola ci subjekt doveryhodneho certifikatu zodpoveda vydavatelovi signera */
-        if (!cert_match) {
-            X509_NAME *trusted_subj = X509_get_subject_name(trusted_cert);
-            X509_NAME *signer_issuer = X509_get_issuer_name(signer);
-            if (trusted_subj && signer_issuer && X509_NAME_cmp(trusted_subj, signer_issuer) == 0) {
-                cert_match = 1;
-            }
-        }
-
-        /* 3. Zaloha verejneho kluca: rovnaky kluc, ine kodovanie certifikatu */
-        if (!cert_match) {
-            EVP_PKEY *signer_key = X509_get0_pubkey(signer);
-            EVP_PKEY *trusted_key = X509_get0_pubkey(trusted_cert);
-            if (signer_key && trusted_key) {
 #if OPENSSL_VERSION_NUMBER >= 0x30000000L
-                if (EVP_PKEY_eq(signer_key, trusted_key) == 1)
-#else
-                if (EVP_PKEY_cmp(signer_key, trusted_key) == 1)
-#endif
-                {
-                    cert_match = 1;
-                }
-            }
+        char group_name[80];
+        size_t group_name_len = 0;
+
+        if (EVP_PKEY_get_utf8_string_param(signer_key, OSSL_PKEY_PARAM_GROUP_NAME,
+                                           group_name, sizeof(group_name), &group_name_len) != 1 ||
+            group_name_len == 0) {
+            fprintf(stderr, "Nepodarilo sa nacitat EC krivku signera.\n");
+            goto cleanup;
         }
 
-        if (!cert_match) {
-            fprintf(stderr, "Certifikat signera v tokene sa nezhoduje s doveryhodnym certifikatom.\n");
-            fprintf(stderr, "Tip: Poskytnuty certifikat moze byt zo starej hierarchie CA.\n");
-            fprintf(stderr, "     Pouzite tsa_client_openssl.exe -verify <subor> bez certifikatu,\n");
-            fprintf(stderr, "     alebo ziskajte aktualny certifikat TSA servera.\n");
-            sk_X509_free(signers);
-            return 0;
+        if (strcmp(group_name, "prime256v1") == 0 || strcmp(group_name, "secp256r1") == 0) {
+            curve_name = "P-256";
+        } else if (strcmp(group_name, "secp384r1") == 0) {
+            curve_name = "P-384";
+        } else if (strcmp(group_name, "secp521r1") == 0) {
+            curve_name = "P-521";
+        } else {
+            fprintf(stderr, "Nepodporovana ECDSA krivka signera. Podporovane: P-256, P-384, P-521.\n");
+            goto cleanup;
         }
+#else
+        const EC_KEY *ec = EVP_PKEY_get0_EC_KEY(signer_key);
+        const EC_GROUP *group = NULL;
+        int curve_nid = NID_undef;
+
+        if (!ec) {
+            fprintf(stderr, "Nepodarilo sa nacitat EC kluc signera.\n");
+            goto cleanup;
+        }
+
+        group = EC_KEY_get0_group(ec);
+        if (!group) {
+            fprintf(stderr, "Nepodarilo sa nacitat EC krivku signera.\n");
+            goto cleanup;
+        }
+
+        curve_nid = EC_GROUP_get_curve_name(group);
+        switch (curve_nid) {
+            case NID_X9_62_prime256v1:
+                curve_name = "P-256";
+                break;
+            case NID_secp384r1:
+                curve_name = "P-384";
+                break;
+            case NID_secp521r1:
+                curve_name = "P-521";
+                break;
+            default:
+                fprintf(stderr, "Nepodporovana ECDSA krivka signera. Podporovane: P-256, P-384, P-521.\n");
+                goto cleanup;
+        }
+#endif
+
+        if (signer_alg_buf && signer_alg_buf_len > 0) {
+            snprintf(signer_alg_buf, signer_alg_buf_len, "ECDSA %s", curve_name);
+        }
+    } else {
+        fprintf(stderr, "Nepodporovany typ verejneho kluca signera (type=%d).\n", signer_key_type);
+        goto cleanup;
+    }
+
+    if (X509_check_purpose(signer, X509_PURPOSE_TIMESTAMP_SIGN, 0) != 1) {
+        fprintf(stderr, "Certifikat signera nema povoleny ucel Time Stamping (id-kp-timeStamping).\n");
+        goto cleanup;
+    }
+
+    store = X509_STORE_new();
+    if (!store) {
+        goto cleanup;
+    }
+
+    if (trusted_cert) {
+        if (X509_STORE_add_cert(store, trusted_cert) != 1) {
+            unsigned long err = ERR_peek_last_error();
+            if (ERR_GET_LIB(err) != ERR_LIB_X509 ||
+                ERR_GET_REASON(err) != X509_R_CERT_ALREADY_IN_HASH_TABLE) {
+                fprintf(stderr, "Nepodarilo sa pridat doveryhodny certifikat do trust store.\n");
+                goto cleanup;
+            }
+            ERR_clear_error();
+        }
+    } else {
+        if (X509_STORE_set_default_paths(store) != 1) {
+            fprintf(stderr, "Nepodarilo sa inicializovat predvoleny trust store.\n");
+            goto cleanup;
+        }
+    }
+
+    if (token->d.sign && token->d.sign->cert) {
+        untrusted = token->d.sign->cert;
+    }
+
+    store_ctx = X509_STORE_CTX_new();
+    if (!store_ctx) {
+        goto cleanup;
+    }
+
+    if (X509_STORE_CTX_init(store_ctx, store, signer, untrusted) != 1) {
+        goto cleanup;
+    }
+
+    X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
+
+    if (X509_verify_cert(store_ctx) != 1) {
+        verify_err = X509_STORE_CTX_get_error(store_ctx);
+        fprintf(stderr, "Validacia certifikatovej retaze zlyhala: %s\n",
+                X509_verify_cert_error_string(verify_err));
+        goto cleanup;
     }
 
     if (PKCS7_verify(token, signers, NULL, NULL, NULL, PKCS7_NOVERIFY) != 1) {
         fprintf(stderr, "Overenie PKCS7 podpisu zlyhalo.\n");
-        sk_X509_free(signers);
-        return 0;
+        goto cleanup;
     }
 
+    EVP_PKEY_free(signer_key);
+    X509_STORE_CTX_free(store_ctx);
+    X509_STORE_free(store);
     sk_X509_free(signers);
     return 1;
+
+cleanup:
+    EVP_PKEY_free(signer_key);
+    X509_STORE_CTX_free(store_ctx);
+    X509_STORE_free(store);
+    sk_X509_free(signers);
+    return 0;
 }
 
 /******************************************************************************
@@ -977,13 +1176,18 @@ cleanup:
 * Navrat:     1 pri uspechu, 0 pri chybe
 *****************************************************************************/
 static int verify_timestamp(const char *file_path, const char *token_path, const char *trusted_cert_path) {
-    unsigned char digest[32];
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
     buffer_t tsr = {0};
     const unsigned char *p;
     TS_RESP *resp = NULL;
     TS_TST_INFO *tst = NULL;
     TS_MSG_IMPRINT *imprint;
     const ASN1_OCTET_STRING *imprint_msg;
+    const EVP_MD *imprint_md = NULL;
+    int imprint_nid = NID_undef;
+    int imprint_len = 0;
+    char signer_alg[64] = "neznamy";
     PKCS7 *token;
     X509 *trusted = NULL;
     int ok = 0;
@@ -993,15 +1197,7 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
     printf("  |                   OVEROVANIE CASOVEJ PECIATKY                        |\n");
     printf("  +=======================================================================+\n\n");
     printf("  Subor: %s\n\n", basename_path(file_path));
-    printf("  [1/5] Hashovanie suboru...\n");
-
-    if (!sha256_file(file_path, digest)) {
-        fprintf(stderr, "\n  [!] CHYBA: Nepodarilo sa vypocitat hash vstupneho suboru\n\n");
-        goto cleanup;
-    }
-
-    printf("        >> Hash uspesne vypocitany\n\n");
-    printf("  [2/5] Citanie casoveho tokenu...\n");
+    printf("  [1/5] Citanie casoveho tokenu...\n");
     printf("        Token: %s\n", basename_path(token_path));
 
     if (!read_file(token_path, &tsr)) {
@@ -1013,7 +1209,7 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
     }
 
     printf("        >> Token nacitany (%lu bajtov)\n\n", (unsigned long)tsr.len);
-    printf("  [3/5] Extrahovanie hashu z tokenu...\n");
+    printf("  [2/5] Extrahovanie hashu z tokenu...\n");
 
     p = tsr.data;
     resp = d2i_TS_RESP(NULL, &p, (long)tsr.len);
@@ -1032,19 +1228,35 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
     if (!imprint) {
         goto cleanup;
     }
+
+    if (!get_imprint_digest_info(imprint, &imprint_md, &imprint_nid, &imprint_len)) {
+        fprintf(stderr, "Nepodporovany digest algoritmus v tokene. Podporovane: SHA-256, SHA-384, SHA-512.\n");
+        goto cleanup;
+    }
+
     imprint_msg = TS_MSG_IMPRINT_get_msg(imprint);
-    if (!imprint_msg || imprint_msg->length != 32) {
+    if (!imprint_msg || imprint_msg->length != imprint_len) {
         fprintf(stderr, "Nepodporovany format message imprint v tokene.\n");
         goto cleanup;
     }
 
-    printf("        >> Hash uspesne extrahovany\n\n");
+    printf("        >> Hash uspesne extrahovany (%s)\n\n", digest_name_from_nid(imprint_nid));
+    printf("  [3/5] Hashovanie suboru (%s)...\n", digest_name_from_nid(imprint_nid));
+
+    if (!digest_file(file_path, imprint_md, digest, &digest_len) || (int)digest_len != imprint_len) {
+        fprintf(stderr, "\n  [!] CHYBA: Nepodarilo sa vypocitat hash vstupneho suboru\n\n");
+        goto cleanup;
+    }
+
+    printf("        >> Hash uspesne vypocitany\n\n");
     printf("  [4/5] Overovanie podpisu...\n");
     if (trusted_cert_path) {
         printf("        Pouzivany certifikat: %s\n", basename_path(trusted_cert_path));
+    } else {
+        printf("        Pouzivany trust store: systemovy/OpenSSL default\n");
     }
 
-    if (memcmp(imprint_msg->data, digest, 32) != 0) {
+    if (memcmp(imprint_msg->data, digest, (size_t)imprint_len) != 0) {
         fprintf(stderr, "        >> Hash z tokenu sa nezhoduje s aktualnym suborom\n\n");
         goto cleanup;
     }
@@ -1063,7 +1275,7 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
         }
     }
 
-    if (!verify_token_signature(token, trusted)) {
+    if (!verify_token_signature(token, trusted, signer_alg, sizeof(signer_alg))) {
         goto cleanup;
     }
 
@@ -1071,9 +1283,13 @@ static int verify_timestamp(const char *file_path, const char *token_path, const
     printf("  [5/5] Porovnavam hashe...\n");
 
     if (trusted_cert_path) {
-        printf("        >> Certifikat sa zhoduje s doveryhodnym certifikatom\n");
+        printf("        >> Certifikatova retaz uspesne validovana proti zadanemu trust certifikatu\n");
+    } else {
+        printf("        >> Certifikatova retaz uspesne validovana proti systemovemu trust store\n");
     }
 
+    printf("        >> Algoritmus message imprint: %s\n", digest_name_from_nid(imprint_nid));
+    printf("        >> Algoritmus podpisu signera: %s\n", signer_alg);
     printf("        >> Hashe sa zhoduju!\n\n");
 
     printf("  +=======================================================================+\n");
@@ -1126,7 +1342,7 @@ static void usage(const char *exe) {
     printf("  ------------------------------------------------------------------------\n");
     printf("    Nazov:   RFC 3161 CASOVY PECIATKOVY KLIENT\n");
     printf("    Projekt: TimeStampClient-C (OpenSSL)\n");
-    printf("    Verzia:  v1.50\n");
+    printf("    Verzia:  v1.60\n");
     printf("    Autor:   Anton Kozar\n\n");
 
     printf("  POUZITIE A PRIKLADY:\n");
@@ -1173,6 +1389,10 @@ static void usage(const char *exe) {
     printf("    - Ak zadate iba jeden parameter po <subor>, app ho rozpozna takto:\n");
     printf("      .crt / .cer / .pem / .der = certifikat, inak = token\n");
     printf("    - Certifikat sa pouziva na kontrolu zhody certifikatu v tokene\n");
+    printf("    - Pri overeni sa vykonava plna validacia certifikatovej retaze\n");
+    printf("      (zadany certifikat ako trust anchor, alebo systemovy trust store)\n");
+    printf("    - Overenie podporuje message imprint SHA-256, SHA-384 a SHA-512\n");
+    printf("    - ECDSA signer je podporovany pre krivky P-256, P-384 a P-521\n");
     printf("    - Mozete pouzit certifikat z Certificates/ alebo vlastny certifikat\n\n");
 
     printf("  +========================================================================+\n\n");
@@ -1225,6 +1445,7 @@ int main(int argc, char **argv) {
 
         } else if (strcmp(argv[arg_index], "-verify") == 0) {
             break;
+
         } else if (argv[arg_index][0] == '-') {
             usage(argv[0]);
             return 1;
@@ -1266,14 +1487,16 @@ int main(int argc, char **argv) {
 
         if (arg_index + 4 < argc) {
             usage(argv[0]);
-            openssl_cleanup();
+            EVP_cleanup();
+            ERR_free_strings();
             return 1;
         }
 
         ok = verify_timestamp(file_path, token_path, cert_path);
         if (!ok) {
             print_openssl_errors();
-            openssl_cleanup();
+            EVP_cleanup();
+            ERR_free_strings();
             return 1;
         }
     } else {
@@ -1302,14 +1525,16 @@ int main(int argc, char **argv) {
 
             if (arg_index + 3 < argc) {
                 usage(argv[0]);
-                openssl_cleanup();
+                EVP_cleanup();
+                ERR_free_strings();
                 return 1;
             }
 
             ok = verify_timestamp(file_path, token_path ? token_path : default_token, cert_path);
             if (!ok) {
                 print_openssl_errors();
-                openssl_cleanup();
+                EVP_cleanup();
+                ERR_free_strings();
                 return 1;
             }
         }
@@ -1318,7 +1543,8 @@ int main(int argc, char **argv) {
             if (arg_index + 1 < argc) {
                 if (argv[arg_index + 1][0] == '-') {
                     usage(argv[0]);
-                    openssl_cleanup();
+                    EVP_cleanup();
+                    ERR_free_strings();
                     return 1;
                 }
             }
@@ -1326,12 +1552,14 @@ int main(int argc, char **argv) {
             ok = timestamp_file(file_path, server_name, host, port, path);
             if (!ok) {
                 print_openssl_errors();
-                openssl_cleanup();
+                EVP_cleanup();
+                ERR_free_strings();
                 return 1;
             }
         }
     }
 
-    openssl_cleanup();
+    EVP_cleanup();
+    ERR_free_strings();
     return 0;
 }
