@@ -273,18 +273,19 @@ tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre
 
         <h2>📊 Podporujeme formáty</h2>
         <ul>
-            <li><strong>Hash:</strong> SHA-256</li>
+            <li><strong>Hash (request path):</strong> SHA-256</li>
+            <li><strong>Hash (verify path):</strong> SHA-256, SHA-384, SHA-512</li>
             <li><strong>Standard:</strong> RFC 3161</li>
             <li><strong>Certifikáty:</strong> X.509 (PEM/DER)</li>
             <li><strong>HTTP:</strong> POST, chunked encoding (RFC 7230)</li>
         </ul>
 
         <h2>✅ Testovanie</h2>
-        <p><strong>Posledný test (16.03.2026):</strong></p>
+        <p><strong>Posledný test (11.04.2026):</strong></p>
         <div class="test-results">
             <div class="test-summary">
                 <div class="test-stat">
-                    <div class="number">22</div>
+                    <div class="number">4</div>
                     <div class="label">PASS</div>
                 </div>
                 <div class="test-stat">
@@ -292,7 +293,7 @@ tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre
                     <div class="label">FAIL</div>
                 </div>
                 <div class="test-stat">
-                    <div class="number">22</div>
+                    <div class="number">4</div>
                     <div class="label">TOTAL</div>
                 </div>
             </div>
@@ -300,10 +301,10 @@ tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt</code></pre
 
         <p><strong>Funkcie:</strong></p>
         <ul>
-            <li>✓ Timestamp pre všetky 5 serverov</li>
-            <li>✓ Verify bez certifikátu pre všetky 5 serverov</li>
-            <li>✓ Implicitné verify (file + token) pre všetky 5 serverov</li>
-            <li>✓ Cert verify pre všetky serverové certifikáty (DigiCert, FreeTSA, Sectigo, Certum, GlobalSign, custom)</li>
+            <li>✓ Build prebehol úspešne (Windows lokálny test)</li>
+            <li>✓ Timestamp vytvorenie (DigiCert) úspešné</li>
+            <li>✓ Verify bez certifikátu úspešné (trust store + fallback)</li>
+            <li>✓ Verify s certifikátom (DigiCert.cer) úspešné</li>
         </ul>
 
 

@@ -37,12 +37,13 @@
 
 ## Performance & Speed
 
-- Average time to create a timestamp: not formally benchmarked in the repository; depends mainly on network latency and TSA server response time.
-- Average time to verify a timestamp: not formally benchmarked; local verification is fast, while chain validation depends on trust store lookup and certificate chain depth.
+- Average time to create a timestamp: 789.64 ms (3 runs, DigiCert server, min 535.94 ms, max 1294.28 ms).
+- Average time to verify a timestamp: 43.06 ms with explicit trust cert (`DigiCert.cer`) and 43.02 ms without explicit cert (system trust store + fallback), both measured over 3 runs.
 - Known bottlenecks or improvements:
   - Network round-trip to TSA is the dominant cost during timestamp creation.
   - Verification now performs chain validation with a fallback trust-anchor path, which is slightly more expensive than the earlier heuristic certificate matching but significantly more correct and secure.
   - File hashing is chunked, so large input files do not need to be loaded fully into memory.
+  - Metric source: local Windows run on 2026-04-11 using `test.txt`; values are indicative and vary by network and host performance.
 
 ## Security & Certificates
 
