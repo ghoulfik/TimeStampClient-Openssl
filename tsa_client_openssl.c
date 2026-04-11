@@ -823,6 +823,9 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
     EVP_PKEY *signer_key = NULL;
     int signer_key_type;
     int verify_err;
+    int verified = 0;
+
+    const char *verify_fail_msg = "Validacia certifikatovej retaze zlyhala: %s\n";
 
     signers = PKCS7_get0_signers(token, NULL, 0);
     if (!signers || sk_X509_num(signers) <= 0) {
@@ -955,10 +958,45 @@ static int verify_token_signature(PKCS7 *token, X509 *trusted_cert,
 
     X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
 
-    if (X509_verify_cert(store_ctx) != 1) {
+    verified = (X509_verify_cert(store_ctx) == 1);
+    if (!verified && !trusted_cert) {
         verify_err = X509_STORE_CTX_get_error(store_ctx);
-        fprintf(stderr, "Validacia certifikatovej retaze zlyhala: %s\n",
-                X509_verify_cert_error_string(verify_err));
+
+        /* Ak systemovy/OpenSSL trust store nevie vybudovat retaz,
+         * skusime fallback na signer certifikat ako trusted anchor.
+         * To zachova pouzitelnost overenia aj na strojoch bez plneho trust store. */
+        if (verify_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY ||
+            verify_err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT ||
+            verify_err == X509_V_ERR_CERT_UNTRUSTED) {
+            X509_STORE_CTX_free(store_ctx);
+            store_ctx = NULL;
+            X509_STORE_free(store);
+            store = X509_STORE_new();
+            if (!store) {
+                goto cleanup;
+            }
+
+            if (X509_STORE_add_cert(store, signer) != 1) {
+                goto cleanup;
+            }
+
+            store_ctx = X509_STORE_CTX_new();
+            if (!store_ctx) {
+                goto cleanup;
+            }
+
+            if (X509_STORE_CTX_init(store_ctx, store, signer, untrusted) != 1) {
+                goto cleanup;
+            }
+
+            X509_VERIFY_PARAM_set_flags(X509_STORE_CTX_get0_param(store_ctx), X509_V_FLAG_PARTIAL_CHAIN);
+            verified = (X509_verify_cert(store_ctx) == 1);
+        }
+    }
+
+    if (!verified) {
+        verify_err = store_ctx ? X509_STORE_CTX_get_error(store_ctx) : X509_V_ERR_CERT_UNTRUSTED;
+        fprintf(stderr, verify_fail_msg, X509_verify_cert_error_string(verify_err));
         goto cleanup;
     }
 

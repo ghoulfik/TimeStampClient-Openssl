@@ -45,9 +45,9 @@ tsa_client_openssl.exe -verify dokument.pdf dokument.pdf.tsr
 tsa_client_openssl.exe -verify dokument.pdf Certificates/FreeTSA.crt
 ```
 
-Poznamka: Ak certifikat nie je poskytnuty, overenie pouzije systemovy/OpenSSL trust store.
+Poznamka: Ak certifikat nie je poskytnuty, overenie najprv pouzije systemovy/OpenSSL trust store a pri potrebe sa prepne na fallback s podpisovym certifikatom ako trust anchor.
 Ak certifikat je poskytnuty, pouzije sa ako trust anchor pre validaciu retaze.
-Overenie vykonava plnu validaciu certifikatovej retaze a kontroluje EKU id-kp-timeStamping.
+Overenie vykonava validaciu certifikatovej retaze a kontroluje EKU id-kp-timeStamping.
 Ak token nie je poskytnuty, automaticky sa pouzije `<subor>.tsr`.
 
 ## Podporovane TSA Servery

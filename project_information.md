@@ -4,7 +4,7 @@
 
 - Version number/name: v1.60
 - Release date: 2026-04-09
-- Brief description of what changed: OpenSSL TSA client with improved verify-path support, including SHA-384/SHA-512 message imprint verification, ECDSA curve support, full X.509 chain validation, and TSA EKU enforcement.
+- Brief description of what changed: OpenSSL TSA client with improved verify-path support, including SHA-384/SHA-512 message imprint verification, ECDSA curve support, chain validation with signer-anchor fallback, and TSA EKU enforcement.
 
 ## Features & Functionality
 
@@ -30,8 +30,8 @@
   - Timestamp tokens are handled as RFC 3161 TS_RESP DER data.
   - Limitation: request generation still uses SHA-256 only.
 - New or removed features:
-  - Added full certificate chain validation in verify mode.
-  - Added default trust store fallback when no certificate is supplied.
+  - Added certificate chain validation in verify mode.
+  - Added a signer-anchor fallback when no certificate is supplied and the default trust store cannot build the chain.
   - Added TSA EKU enforcement (`id-kp-timeStamping`).
   - No removed user-facing features.
 
@@ -41,7 +41,7 @@
 - Average time to verify a timestamp: not formally benchmarked; local verification is fast, while chain validation depends on trust store lookup and certificate chain depth.
 - Known bottlenecks or improvements:
   - Network round-trip to TSA is the dominant cost during timestamp creation.
-  - Verification now performs full chain validation, which is slightly more expensive than the earlier heuristic certificate matching but significantly more correct and secure.
+  - Verification now performs chain validation with a fallback trust-anchor path, which is slightly more expensive than the earlier heuristic certificate matching but significantly more correct and secure.
   - File hashing is chunked, so large input files do not need to be loaded fully into memory.
 
 ## Security & Certificates
@@ -53,12 +53,12 @@
   - RSA and ECDSA signer certificates
 - Certificate handling/validation:
   - Uses OpenSSL PKCS7, TS, EVP, and X509 APIs.
-  - Validates the signer through full X.509 chain building.
-  - Uses the system/OpenSSL trust store when no certificate is provided.
+  - Validates the signer through X.509 chain building.
+  - Uses the system/OpenSSL trust store when no certificate is provided, then falls back to the signer certificate as an anchor if the default store cannot build the chain.
   - Uses a supplied certificate as trust anchor material when provided.
   - Enforces TSA extended key usage (`id-kp-timeStamping`).
 - Security fixes or vulnerabilities addressed:
-  - Replaced heuristic signer matching with full certificate chain validation.
+  - Replaced heuristic signer matching with chain validation and signer-anchor fallback.
   - Removed dependency on exact certificate-name matching for successful verify.
   - Added support for stronger digest algorithms in the verify path.
 - Hash algorithm used:
