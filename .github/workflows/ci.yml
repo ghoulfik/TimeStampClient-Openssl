@@ -50,6 +50,7 @@ jobs:
       - name: Smoke test CLI
         shell: bash
         run: |
+          rm -f test.txt.tsr test.txt.metadata.txt
           set +e
           ./tsa_client_openssl -verify test.txt > ci-smoke.log 2>&1
           status=$?

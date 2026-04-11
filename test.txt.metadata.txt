@@ -1,6 +1,0 @@
-RFC3161 Timestamp Metadata
-==========================
-Message SHA-256: ebbb1faf70f08859dc1e53b45bed904ea09f4e034c6f56fdf0147948afb55665
-GenTime: Apr 11 15:26:06 2026 GMT
-Serial: 657EFF35EC4BBBB01629DD7ABF4953BBA9B2E4AA
-Policy OID: 1.3.6.1.4.1.4146.2.3.1.2
